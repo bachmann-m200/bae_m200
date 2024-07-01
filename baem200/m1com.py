@@ -4,11 +4,9 @@
 # python classes to interact with a M1 Controller through M1Com and ctypes.
 
 import ctypes, os.path, shutil, sys
-import datetime, warnings
 if sys.platform == 'win32':
     from ctypes import wintypes
 from time import strptime, localtime
-import ipaddress
 
 RFS_DIRLEN_A         = 200
 MIO_INFOLEN_A        = 200
@@ -22,7 +20,7 @@ M_UNAMELEN2_A        = 64
 M_PWORDLEN2          = 32
 M_CARDNAMELEN_A      = 24
 SVI_ADDRLEN_A        = 64
-IF_NAME_LEN          = 8
+MIO_PRODNBLEN_A      = 12
 BOOT_LEN1            = 20
 ONLINE               = 0
 OFFLINE              = 1
@@ -98,13 +96,6 @@ RES_S_EOI            = 6
 RES_S_RESET          = 7
 RES_S_WARNING        = 8
 RES_S_ERROR_SMART    = 9
-
-# Possible errorcodes for setIP
-M_ES_RES             = 0x00030000
-M_E_BADAUTH          = ctypes.c_int32(0x80000105).value
-RES_E_FAILED         = (M_ES_RES | M_E_FAILED)
-RES_E_NOWRITE        = (M_ES_RES | M_E_NOWRITE)
-RES_E_BADAUTH        = (M_ES_RES | M_E_BADAUTH)
 
 # Possible errorcodes:
 M1C_BASE				= 0x81100000      # indicates that m1com is error source for other error sources refer to msys.h
@@ -444,7 +435,7 @@ class RFS_FSH_ATTRIB(ctypes.Structure):
     _fields_ = [("FileMode",        ctypes.c_uint16),
                 ("DosFileAtt",      ctypes.c_uint8),
                 ("ModTime",         tm),
-                ("Size",            ctypes.c_uint32)]
+                ("Size",            (ctypes.c_char * RFS_DIRLEN_A))]
 
 class RFS_LISTDIR_ITEM(ctypes.Structure):
     _fields_ = [("sizeOfItem",      ctypes.c_uint32),
@@ -459,21 +450,18 @@ class RFS_LISTDIR_C(ctypes.Structure):
                 ("Spare",           (ctypes.c_int32 * 3)),
                 ("DirName",         (ctypes.c_char * RFS_DIRLEN_A))]
 
-'''
-This function is a factory method than can be used to create a RFS_LISTDIR_R
-structure with the correct number of RFS_LISTDIR_ITEM entries. 
-'''
-def N_RFS_LISTDIR_R(num_of_structs):
-    class _RFS_LISTDIR_R(ctypes.Structure):
-            _fields_ = [
-                ("RetCode",         ctypes.c_int32),
+class RFS_LISTDIR_R(ctypes.Structure):
+    _fields_ = [("RetCode",         ctypes.c_int32),
                 ("NbItems",         ctypes.c_uint32),
                 ("EndOfDir",        ctypes.c_int32),
                 ("Spare",           (ctypes.c_int32 * 3)),
-                ("Items",           RFS_LISTDIR_ITEM*num_of_structs)]
-    return _RFS_LISTDIR_R()
-
-
+                ("Items",           RFS_LISTDIR_ITEM)]
+    def __init__(self, num_of_structs):
+        #elems = (RFS_LISTDIR_ITEM * num_of_structs)()
+        #self.Items = ctypes.cast(elems, ctypes.POINTER(RFS_LISTDIR_ITEM))
+        #self.NbItems = num_of_structs
+        print("Size: " + str(ctypes.sizeof(self)))
+    
 class TARGET_INFO(ctypes.Structure):
     _fields_ = [("extPingR", RES_EXTPING_R),
                 ("hostAddr", ctypes.c_char * 16)]
@@ -556,37 +544,6 @@ class RES_MODXINFO_C(ctypes.Structure):
 class RES_MODXINFO_R(ctypes.Structure):
     _fields_ = [("RetCode", ctypes.c_int32),
                 ("Inf",     RES_MODXINFO)]
-
-class RES_IFSHOW_C(ctypes.Structure):
-    _fields_ = [("IfName",     ctypes.c_char*IF_NAME_LEN),
-                ("Spare",      ctypes.c_uint8*8)]
-
-class RES_IFSHOW_R(ctypes.Structure):
-    _fields_ = [("RetCode",      ctypes.c_int32),
-                ("Unit",         ctypes.c_uint32),
-                ("Mtu",          ctypes.c_uint32),
-                ("Flags",        ctypes.c_uint32),
-                ("IpAddress_1",  ctypes.c_uint32),
-                ("SubnetMask_1", ctypes.c_uint32),
-                ("IpAddress_2",  ctypes.c_uint32),
-                ("SubnetMask_2", ctypes.c_uint32),
-                ("IpAddress_3",  ctypes.c_uint32),
-                ("SubnetMask_3", ctypes.c_uint32),
-                ("IfName",       ctypes.c_char*IF_NAME_LEN),
-                ("MacAddress",   ctypes.c_uint8*6),
-                ("Spare1",       ctypes.c_uint8*2),
-                ("Spare2",       ctypes.c_uint8*24)]
-
-class RES_SETIP_C(ctypes.Structure):
-    _fields_ = [("ProdNb",     ctypes.c_char*MIO_PRODNBLEN_A),
-                ("OldIp",      ctypes.c_uint32),
-                ("NewIp",      ctypes.c_uint32),
-                ("SubnetMask", ctypes.c_uint32),
-                ("Reserved",   ctypes.c_uint8*12)]
-
-class RES_SETIP_R(ctypes.Structure):
-    _fields_ = [("RetCode",  ctypes.c_int32),
-                ("Reserved", ctypes.c_uint8*16)]
 
 class MIO_GETDRV_C(ctypes.Structure):
     _fields_ = [("CardNb", ctypes.c_uint32),]
@@ -706,121 +663,20 @@ class PyComTypeException(Exception):
         self.value = value
     def __str__(self):
         return repr(self.value)
-
-'''
-Class used to represent file system entries like:
-- Directories
-- Files
-- Links
-- ...
-
-The class contains following attributes:
-- name:         Name of the entry 
-- path:         Absoulte Path of the entry
-- fileMode:     FileMode see stat.h for details 
-- dosFileAtt:   File attribute byte (dosFs only)
-- modTime:      Last Modification (datetime object)
-- size:         File Size (only available for file ebtries)
-
-and methods: 
-...
-- isDir():      Returns true if directory
-- isFile():     Returns true if file
-- isLink():     Returns true if link
-
-
-'''
-class FileSystemEntry:
-
-    # see stat.h -> File modes for details
-    _FILE_MODE_S_IFMT	= 0xf000		#/* file type field */
-    _FILE_MODE_S_IFDIR	= 0x4000		#/*  directory */
-    _FILE_MODE_S_IFREG	= 0x8000		#/*  regular */
-    _FILE_MODE_S_IFLNK	= 0xa000		#/*  symbolic link */
-
-
-
-    def __init__(self, name='', path= '', fileMode=0, dosFileAtt=0, modTime=None, size=None):
-        self.name = name                # Name of the entry
-        self.path = path                # Absolute path of entry
-        self.fileMode = fileMode        # File mode (see stat.h)
-        self.dosFileAtt = dosFileAtt    # Fos file att. (dosFs only!)
-        self.modTime = modTime          # Latest modification time 
-        self.size = size                # File Size (only correct for FILES!)
-
-    def __str__(self):
-        prefix = ''
-        if(self.isFile()):
-            prefix += 'F - '
-        elif(self.isDir()):
-             prefix += 'D - '
-        elif(self.isLink()):
-             prefix += 'L - '
-        prefix += str(self.modTime) +' - '
-        return prefix+self.name
-    
-    def __repr__(self):
-        return "FileSystemEntry(" +self.name+")"
-    
-    '''
-    Returns the size of the FileSystemEntry
-
-    Warning: This only works for FileSystemEntries of the Type File!
-    '''
-    def getSize(self):
-        if(self.isFile()): 
-            return self.size
-    
-    '''
-    Returns the name of the FileSystemEntry
-    '''
-    def getName(self):
-        return self.name
-
-    '''
-    Returns the abs. path of the FileSystemEntry
-    '''
-    def getPath(self):
-        return self.path
-
-    '''
-    Returns a datetime object of the last modification 
-    '''
-    def getModificationDate(self):
-        if(self.modTime):
-            return self.modTime
-
-    '''
-    Return true if the FileSystemEntry is a directory 
-    '''
-    def isDir(self):
-        return ((self.fileMode & self._FILE_MODE_S_IFMT) == self._FILE_MODE_S_IFDIR)
-    
-    '''
-    Return true if the FileSystemEntry is a file 
-    '''
-    def isFile(self):
-        return ((self.fileMode & self._FILE_MODE_S_IFMT) == self._FILE_MODE_S_IFREG)
-    
-    '''
-    Return true if the FileSystemEntry is a link 
-    '''
-    def isLink(self):
-        return ((self.fileMode & self._FILE_MODE_S_IFMT) == self._FILE_MODE_S_IFLNK)
-
+        
 class PyCom:
     """
-    Instance loading the M1COM DLL.
-    
-    Usage:
-    
-    >>> dll = PyCom()
+    Instance loading the M1COM DLL.\n
+    \n
+    Usage:\n
+    \n
+    >>> dll = PyCom()\n
     >>> dll.getDllVersion()
-    'V1.14.99 Release'
+    'V1.14.99 Release'\n
     >>> dll.getDllBits()
-    '64bit'
+    '64bit'\n
     """
-    def __init__(self, dllpath = "", servicename="PyCom"):
+    def __init__(self, dllpath = ""):
 
         self.operatingSystem = sys.platform
 
@@ -888,11 +744,11 @@ class PyCom:
             try:
                 shutil.copyfile(logprp, "log.prp")
             except Exception as e:
-                print("pyCom Warn: Can't Copy log.prp from path:\n" + logprp + "\n" + str(e))
+                print("pyCom Warn: Can't Copy log.prp from path:\n" + logprp + "\n" + e)
         m1Dll = ctypes.CDLL(dllpath)
         
         #configuration:
-        self.servicename = servicename
+        self.servicename = "PyCom"
         
         #UnitTested: yes
         #returns the version of the m1com.dll
@@ -1196,11 +1052,11 @@ class PyCom:
 
     def getDllVersion(self):
         """
-        Return the DLL version of the m1com.dll.
-        
-        >>> dll = PyCom()
+        Return the DLL version of the m1com.dll.\n
+        \n
+        >>> dll = PyCom()\n
         >>> dll.getDllVersion()
-        'V1.14.99 Release'
+        'V1.14.99 Release'\n
         """
 
         version = ctypes.create_string_buffer(40)
@@ -1209,56 +1065,56 @@ class PyCom:
 
     def getDllBits(self):
         """
-        Return whether the m1com.dll is 32bit or 64bit.
-        
-        >>> dll = PyCom()
+        Return whether the m1com.dll is 32bit or 64bit.\n
+        \n
+        >>> dll = PyCom()\n
         >>> dll.getDllBits()
-        '64bit'
+        '64bit'\n
         """
         return self.bits
 
 class M1Controller:
     """
-    The M1Controller class.
-    
-    Usage:
-    
-    >>> mh = M1Controller(ip='192.0.1.230')
-    >>> mh.connect(timeout=3000)
-    >>> mh.getSessionLiveTime()                                                                 # doctest: +SKIP 
-    0
-    >>> mh.getLoginInfo()                                                                       # doctest: +SKIP 
-    >>> mh.renewConnection()
-    >>> mh.getConnectionState()                                                                 # doctest: +SKIP 
-    'ONLINE'
-    >>> mh.getTargetState()                                                                     # doctest: +SKIP 
-    {'appState': 'RES_S_RUN', 'rebootCount': 100}
-    >>> mh.getNumberofSwModules()                                                               # doctest: +SKIP 
-    9
-    >>> mh.getSwModuleByName('RES')                                                             # doctest: +SKIP 
-    >>> mh.getListofSwModules()                                                                 # doctest: +SKIP 
-    >>> mh.getListofHwModules()                                                                 # doctest: +SKIP 
-    >>> mh.getDrvId(7)                                                                          # doctest: +SKIP 
-    >>> mh.getCardInfo(7)                                                                       # doctest: +SKIP 
-    >>> mh.getCardInfoExt(7)                                                                    # doctest: +SKIP 
-    >>> mh.copyFromTarget('/cfc0/mconfig.ini', 'localCopyMconfig.ini')                          # doctest: +SKIP 
-    >>> mh.copyToTarget('localCopyMconfig.ini', '/cfc0/localCopyMconfig.ini')                   # doctest: +SKIP 
-    >>> mh.copyRemote('/cfc0/localCopyMconfig.ini', '/cfc0/localCopyMconfig2.ini')              # doctest: +SKIP 
-    >>> mh.remove('/cfc0/localCopyMconfig.ini')                                                 # doctest: +SKIP 
-    >>> mh.resetAll()                                                                           # doctest: +SKIP 
-    >>> mh.reboot()                                                                             # doctest: +SKIP 
-    >>> mh.sendCall("MOD", 134, ctypes.c_int32(0), ctypes.c_int32(0), timeout=3000, version=2)  # doctest: +SKIP 
-    c_long(0)
-    >>> mh.setUintParam('M1C_IGNORE_SERVER_CERT', 1)
+    The M1Controller class.\n
+    \n
+    Usage:\n
+    \n
+    >>> mh = M1Controller(ip='192.0.1.230')\n
+    >>> mh.connect(timeout=3000)\n
+    >>> mh.getSessionLiveTime()                                                                 # doctest: +SKIP \n
+    0\n
+    >>> mh.getLoginInfo()                                                                       # doctest: +SKIP \n
+    >>> mh.renewConnection()\n
+    >>> mh.getConnectionState()                                                                 # doctest: +SKIP \n
+    'ONLINE'\n
+    >>> mh.getTargetState()                                                                     # doctest: +SKIP \n
+    {'appState': 'RES_S_RUN', 'rebootCount': 100}\n
+    >>> mh.getNumberofSwModules()                                                               # doctest: +SKIP \n
+    9\n
+    >>> mh.getSwModuleByName('RES')                                                             # doctest: +SKIP \n
+    >>> mh.getListofSwModules()                                                                 # doctest: +SKIP \n
+    >>> mh.getListofHwModules()                                                                 # doctest: +SKIP \n
+    >>> mh.getDrvId(7)                                                                          # doctest: +SKIP \n
+    >>> mh.getCardInfo(7)                                                                       # doctest: +SKIP \n
+    >>> mh.getCardInfoExt(7)                                                                    # doctest: +SKIP \n
+    >>> mh.copyFromTarget('/cfc0/mconfig.ini', 'localCopyMconfig.ini')                          # doctest: +SKIP \n
+    >>> mh.copyToTarget('localCopyMconfig.ini', '/cfc0/localCopyMconfig.ini')                   # doctest: +SKIP \n
+    >>> mh.copyRemote('/cfc0/localCopyMconfig.ini', '/cfc0/localCopyMconfig2.ini')              # doctest: +SKIP \n
+    >>> mh.remove('/cfc0/localCopyMconfig.ini')                                                 # doctest: +SKIP \n
+    >>> mh.resetAll()                                                                           # doctest: +SKIP \n
+    >>> mh.reboot()                                                                             # doctest: +SKIP \n
+    >>> mh.sendCall("MOD", 134, ctypes.c_int32(0), ctypes.c_int32(0), timeout=3000, version=2)  # doctest: +SKIP \n
+    c_long(0)\n
+    >>> mh.setUintParam('M1C_IGNORE_SERVER_CERT', 1)\n
     >>> mh.getUintParam('M1C_IGNORE_SERVER_CERT')
-    1
-    >>> mh.setStringParam('M1C_PROXY_USERNAME', 'Example')
+    1\n
+    >>> mh.setStringParam('M1C_PROXY_USERNAME', 'Example')\n
     >>> mh.getStringParam('M1C_PROXY_USERNAME')
-    'Example'
+    'Example'\n
     >>> mh.getMaxCallSize()
-    16340
+    16340\n
     >>> mh.disconnect()
-    0
+    0\n
     """
 
     def __init__(self, ip='192.0.1.230', username='M1', password='bachmann', pycom=PyCom()):
@@ -1284,9 +1140,13 @@ class M1Controller:
             raise PyComException(("pyCom Error: Can't access Controller["+self._ip+"] when not connected!"))
         return self._ctrlHandle
 
-    def connect(self, protocol='TCP', clientCert=None, clientCertPassword=None, timeout=1000):
+    def connect(self, protocol='TCP', portNumber=80, clientCert=None, clientCertPassword=None, timeout=1000):
         """
-        Make a connection with the target using the protocols: 'TCP', 'QSOAP', 'SSL' or 'UDP'. When using SSL with client certificate, the path of the client certificate (*.p12 file)
+        Make a connection with the target using the protocols: 'TCP', 'QSOAP', 'SSL' or 'UDP'. 
+        
+        When using Qsoap the default port is 80, other ports can be selected by changing the portNumber argument
+        
+        When using SSL with client certificate, the path of the client certificate (*.p12 file)
         and its password should be specified using the clientCert and clientCertPassword arguments respectively.
         """
         if protocol == 'TCP':
@@ -1310,6 +1170,11 @@ class M1Controller:
             self._ctrlHandle = self._pycom.TARGET_Create(self._ip.encode('utf-8'), protocol, timeout)
             if(self._ctrlHandle == None):
                 raise PyComException(("pyCom Error: Can't create handle to "+self._ip+" through '"+repr(protocol)+"' with username:"+self._username))
+
+            if protocol == PROTOCOL_QSOAP:
+                if(portNumber!=80):
+                    if(self._pycom.TARGET_SetUintParam(self._ctrlHandle, M1C_QSOAP_PORT, portNumber) != OK):
+                        raise PyComException(("pyCom Error: Can't set uint parameter M1C_QSOAP_PORT to " + str(portNumber) + " for "+self._ip))
 
             if protocol == PROTOCOL_SSL:
                 if(self._pycom.TARGET_SetUintParam(self._ctrlHandle, M1C_IGNORE_SERVER_CERT, True) != OK):
@@ -1600,11 +1465,10 @@ class M1Controller:
         if(self._pycom.RFS_Remove(self.getCtrlHandle(), remoteFileName.encode('utf-8')) != OK):
             raise PyComException(("pyCom Error: Can't remove " + remoteFileName + " on Controller['"+self._ip+"']"))
 
-
     def listDirectory(self, directoryPath):
         """
-        List directory content. This SMI function gets the content of a directory. 
-        
+        List directory content. This SMI function gets the content of a directory. \n
+        \n
         Warning: This currently doesn't fully work!
         """
 
@@ -1614,50 +1478,32 @@ class M1Controller:
         send.MaxNbItems = ctypes.c_uint32(100)
         send.DirName = directoryPath.encode()
 
-        recv = N_RFS_LISTDIR_R(1)
+        recv = RFS_LISTDIR_R(1)
 
         if(self.sendCall('RFS', 124, send, recv).RetCode != OK):
             errorMsg = self.getErrorInfo(recv.RetCode)
             raise PyComException(("m1com Error: Can't list directory of Controller["+self._ip+"], error message: " + str(errorMsg)))
 
-        recv = N_RFS_LISTDIR_R(recv.NbItems)
+        recv = RFS_LISTDIR_R(recv.NbItems)
 
         if(self.sendCall('RFS', 124, send, recv).RetCode != OK):
             errorMsg = self.getErrorInfo(recv.RetCode)
             raise PyComException(("m1com Error: Can't list directory of Controller["+self._ip+"], error message: " + str(errorMsg)))
         
-        # Triggered when the end of the directory is not reached
-        if(recv.EndOfDir == 0):
-            warnings.warn("m1com Warning: LISTDIR did not reach end of directory!")
-        # Used to return all fileSystemEntries
-        fileSystemEntries = []
-        # Used to iterate over the LISTDIR_ITEMs
-        offset = 0
-        for n_Entry in range(recv.NbItems):
-            item_ptr = ctypes.cast(ctypes.byref(recv.Items, offset), ctypes.POINTER(RFS_LISTDIR_ITEM))
-            # Create datetime object
-            mTime = datetime.datetime(item_ptr.contents.Attrib.ModTime.tm_year+1900,
-                                      item_ptr.contents.Attrib.ModTime.tm_mon+1,
-                                      item_ptr.contents.Attrib.ModTime.tm_mday,
-                                      item_ptr.contents.Attrib.ModTime.tm_hour,
-                                      item_ptr.contents.Attrib.ModTime.tm_min,
-                                      item_ptr.contents.Attrib.ModTime.tm_sec)
-            
-            # Create FileSystemEntry
-            entry  = FileSystemEntry(item_ptr.contents.Name.decode('utf-8'),
-                                     os.path.join(directoryPath,item_ptr.contents.Name.decode('utf-8')),
-                                     item_ptr.contents.Attrib.FileMode,
-                                     item_ptr.contents.Attrib.DosFileAtt,
-                                     mTime,
-                                     item_ptr.contents.Attrib.Size)
-            # Append new entry
-            fileSystemEntries.append(entry)
-
-            # Offset is increased by the size of the items entry
-            offset += item_ptr.contents.sizeOfItem      
+        #print("tm_sec: " + str(recv.Items.Attrib.ModTime.tm_sec))
+        #print("tm_min: " + str(recv.Items.Attrib.ModTime.tm_min))
+        #print("tm_hour: " + str(recv.Items.Attrib.ModTime.tm_hour))
+        #print("tm_mday: " + str(recv.Items.Attrib.ModTime.tm_mday))
+        #print("tm_mon: " + str(recv.Items.Attrib.ModTime.tm_mon))
+        #print("tm_year: " + str(recv.Items.Attrib.ModTime.tm_year))
+        #print("tm_wday: " + str(recv.Items.Attrib.ModTime.tm_wday))
+        #print("tm_yday: " + str(recv.Items.Attrib.ModTime.tm_yday))
+        #print("tm_isdst: " + str(recv.Items.Attrib.ModTime.tm_isdst))
         
-        return fileSystemEntries
-
+        returnValue = recv.Items.Name
+        
+        return returnValue
+    
     def reboot(self):
         """
         Reboot the target.
@@ -1833,100 +1679,6 @@ class M1Controller:
 
         return {"errorSrc":errorSrc.value.decode('utf-8'), "errorMsg":errorMsg.value.decode('utf-8')}
 
-    def getNetworkInfo(self, interfaceName):
-        """
-        Get network interface information. 
-
-        This SMI call returns information about a given network interface:
-        - Interface unit
-        - Interface flags
-        - Interface MAC address
-        - IP address + subnet mask
-
-        Use RES_PROC_GETIFLST to get a list of available network interfaces.
-        """
-
-        send = RES_IFSHOW_C()
-        send.IfName = interfaceName.encode("utf-8")
-        recv = RES_IFSHOW_R()
-
-        if(self.sendCall('RES', 328, send, recv).RetCode != OK):
-            errorMsg = self.getErrorInfo(recv.RetCode)
-            raise PyComException(("m1com Error: Could not get network information for target Controller["+self._ip+"], error message: " + str(errorMsg)))
-
-        networkInfo = {}
-        networkInfo["Unit"]         = recv.Unit
-        networkInfo["Mtu"]          = recv.Mtu
-        networkInfo["Flags"]        = recv.Flags
-        networkInfo["IpAddress_1"]  = str(ipaddress.IPv4Address(recv.IpAddress_1))
-        networkInfo["SubnetMask_1"] = str(ipaddress.IPv4Address(recv.SubnetMask_1))
-        networkInfo["IpAddress_2"]  = str(ipaddress.IPv4Address(recv.IpAddress_2))
-        networkInfo["SubnetMask_2"] = str(ipaddress.IPv4Address(recv.SubnetMask_2))
-        networkInfo["IpAddress_3"]  = str(ipaddress.IPv4Address(recv.IpAddress_3))
-        networkInfo["SubnetMask_3"] = str(ipaddress.IPv4Address(recv.SubnetMask_3))
-        networkInfo["IfName"]       = recv.IfName.decode("utf-8")        
-        macAddress = ""
-        for i in range(recv.MacAddress._length_):
-            macAddress = macAddress + hex(recv.MacAddress[i]).replace("0x", "")
-
-            if i < (recv.MacAddress._length_ - 1):
-                macAddress = macAddress + ":"
-        networkInfo["MacAddress"] = macAddress
-
-        return networkInfo.copy()
-
-    def setIP(self, ethInterface, newIP, newSubnetMask):
-        """
-        Set IP address. 
-
-        This SMI call sets the IP address + subnet mask for the given Ethernet interface ('eth0', 'eth1' or 'eth2').
-
-        Requirements to successfully set the IP address:
-        - Security level must be 0
-        - CPU hex switch must be PROG
-        """
-
-        # Get the network info
-        networkInfo = self.getNetworkInfo(ethInterface)
-
-        # Get the current IP
-        currentIP = ""
-        if ethInterface == "eth0":
-            currentIP = networkInfo["IpAddress_1"]
-        elif ethInterface == "eth1":
-            currentIP = networkInfo["IpAddress_2"]
-        elif ethInterface == "eth2":
-            currentIP = networkInfo["IpAddress_3"]
-        else:
-            raise PyComException(("m1com Error: Could not set IP for target Controller["+self._ip+"], Ethernet interface invalid: " + str(ethInterface)))
-
-        # Get target ProdNb
-        targetFinder = M1TargetFinder()
-        targetInfo   = targetFinder.TargetSmiPing(currentIP)
-        
-        send = RES_SETIP_C()
-        send.ProdNb     = targetInfo["ProdNb"].encode("utf-8")
-        send.OldIp      = int(ipaddress.IPv4Address(currentIP))
-        send.NewIp      = int(ipaddress.IPv4Address(newIP))
-        send.SubnetMask = int(ipaddress.IPv4Address(newSubnetMask))
-        recv = RES_SETIP_R()
-
-        # Set IP
-        retCall = self.sendCall('RES', 322, send, recv).RetCode
-
-        # Check return
-        if retCall == OK:
-            return
-        elif retCall == RES_E_FAILED:
-            raise PyComException(("m1com Error: Could not set IP for target Controller["+self._ip+"], error message: No Ethernet interface for OldIp found"))
-        elif retCall == RES_E_NOWRITE:
-            raise PyComException(("m1com Error: Could not set IP for target Controller["+self._ip+"], error message: Invalid CPU Hex switch"))
-        elif retCall == RES_E_BADAUTH:
-            raise PyComException(("m1com Error: Could not set IP for target Controller["+self._ip+"], error message: Security level <> 0 "))
-        else:
-            errorMsg = self.getErrorInfo(recv.RetCode)
-            raise PyComException(("m1com Error: Could not set IP for target Controller["+self._ip+"], error message: " + str(errorMsg)))
-
     def setDateTime(self, datetimeString):
         """
         Set the system date and time [LOCAL] of the target (MOD_PROC_SETDATE) using an input argument with the string format 'YYYY-MM-DD_HH-MM-SS'.
@@ -1978,21 +1730,21 @@ class M1Controller:
 
 class M1Application:
     """
-    The M1Application class. Can be used to stop, start, reset, deinit an application on a target.
-    
-    Usage:
-    
-    >>> mh = M1Controller(ip='192.0.1.230')
-    >>> mh.connect(timeout=3000)
-    >>> app = M1Application('SVIWRITE', mh)                                                     # doctest: +SKIP 
-    >>> app.stop()                                                                              # doctest: +SKIP 
-    >>> app.start()                                                                             # doctest: +SKIP 
-    >>> app.reset()                                                                             # doctest: +SKIP 
-    >>> app.deinit()                                                                            # doctest: +SKIP 
-    >>> app.getInfo()                                                                           # doctest: +SKIP 
-    >>> app.getState()                                                                          # doctest: +SKIP 
+    The M1Application class. Can be used to stop, start, reset, deinit an application on a target.\n
+    \n
+    Usage:\n
+    \n
+    >>> mh = M1Controller(ip='192.0.1.230')\n
+    >>> mh.connect(timeout=3000)\n
+    >>> app = M1Application('SVIWRITE', mh)                                                     # doctest: +SKIP \n
+    >>> app.stop()                                                                              # doctest: +SKIP \n
+    >>> app.start()                                                                             # doctest: +SKIP \n
+    >>> app.reset()                                                                             # doctest: +SKIP \n
+    >>> app.deinit()                                                                            # doctest: +SKIP \n
+    >>> app.getInfo()                                                                           # doctest: +SKIP \n
+    >>> app.getState()                                                                          # doctest: +SKIP \n
     >>> mh.disconnect()
-    0
+    0\n
     """
 
     def __init__(self, applicationName, m1controller):
@@ -2150,17 +1902,17 @@ class M1SVIObserver:
     SVI Observer to monitor/read multiple SVI variables at the same time. This method is preferred above the M1SVIReader method
     since it only communicates variables that were changed during a call. If you also want the values of variables that did not
     change, you can call M1SVIObserver.getVariables(updatedOnly=False). This still returns all variables, also the variables that
-    did not change, but is also faster than using the M1SVIReader method.
-    
-    Usage:
-    
-    >>> mh = M1Controller(ip='192.0.1.230')
-    >>> mh.connect(timeout=3000)
-    >>> sviObserver = M1SVIObserver(['RES/Time_s', 'RES/Time_us', 'RES/Version'], mh)
-    >>> sviObserver.getVariables()                                                                  # doctest: +SKIP 
-    >>> sviObserver.detach()
+    did not change, but is also faster than using the M1SVIReader method.\n
+    \n
+    Usage:\n
+    \n
+    >>> mh = M1Controller(ip='192.0.1.230')\n
+    >>> mh.connect(timeout=3000)\n
+    >>> sviObserver = M1SVIObserver(['RES/Time_s', 'RES/Time_us', 'RES/Version'], mh)\n
+    >>> sviObserver.getVariables()                                                                  # doctest: +SKIP \n
+    >>> sviObserver.detach()\n
     >>> mh.disconnect()
-    0
+    0\n
     """
 
     def __init__(self, sviNames, m1controller):
@@ -2461,18 +2213,18 @@ class M1SVIObserver:
 class M1SVIReader:
     """
     SVI Reader to read multiple SVI variables at the same time (not recommended since the M1SVIObserver is faster and
-    has the same functionality).
-    
-    Usage:
-    
-    >>> mh = M1Controller(ip='192.0.1.230')
-    >>> mh.connect(timeout=3000)
-    >>> sviReader = M1SVIReader(['SVIWRITE/boolVar', 'SVIWRITE/real64Var', 'SVIWRITE/stringVar'], mh)       # doctest: +SKIP 
-    >>> sviReader.getVariables()                                                                            # doctest: +SKIP 
-    [True, 1.0, "Hello"]
-    >>> sviReader.detach()                                                                                  # doctest: +SKIP 
+    has the same functionality).\n
+    \n
+    Usage:\n
+    \n
+    >>> mh = M1Controller(ip='192.0.1.230')\n
+    >>> mh.connect(timeout=3000)\n
+    >>> sviReader = M1SVIReader(['SVIWRITE/boolVar', 'SVIWRITE/real64Var', 'SVIWRITE/stringVar'], mh)       # doctest: +SKIP \n
+    >>> sviReader.getVariables()                                                                            # doctest: +SKIP \n
+    [True, 1.0, "Hello"]\n
+    >>> sviReader.detach()                                                                                  # doctest: +SKIP \n
     >>> mh.disconnect()
-    0
+    0\n
     """
 
     def __init__(self, sviNames, m1controller):
@@ -2709,17 +2461,17 @@ class M1SVIReader:
 
 class M1SVIWriter:
     """
-    SVI Writer to write to multiple SVI variables at the same time.
-    
-    Usage:
-    
-    >>> mh = M1Controller(ip='192.0.1.230')
-    >>> mh.connect(timeout=3000)
-    >>> sviWriter = M1SVIWriter(['SVIWRITE/boolVar', 'SVIWRITE/real64Var', 'SVIWRITE/stringVar'], mh)       # doctest: +SKIP 
-    >>> sviWriter.setVariables([True, 1.0, "Hello"])                                                        # doctest: +SKIP 
-    >>> sviWriter.detach()                                                                                  # doctest: +SKIP 
+    SVI Writer to write to multiple SVI variables at the same time.\n
+    \n
+    Usage:\n
+    \n
+    >>> mh = M1Controller(ip='192.0.1.230')\n
+    >>> mh.connect(timeout=3000)\n
+    >>> sviWriter = M1SVIWriter(['SVIWRITE/boolVar', 'SVIWRITE/real64Var', 'SVIWRITE/stringVar'], mh)       # doctest: +SKIP \n
+    >>> sviWriter.setVariables([True, 1.0, "Hello"])                                                        # doctest: +SKIP \n
+    >>> sviWriter.detach()                                                                                  # doctest: +SKIP \n
     >>> mh.disconnect()
-    0
+    0\n
     """
 
     def __init__(self, sviNames, m1controller):
@@ -3012,13 +2764,13 @@ class M1SVIWriter:
 
 class M1TargetFinder:
     """
-    Look for targets on the network and return their information.
-	
-    Usage:
-    
-    >>> mt = M1TargetFinder()                                                                   # doctest: +SKIP 
-    >>> mt.TargetBroadcastSmiPing(timeout=3000)                                                 # doctest: +SKIP 
-    >>> mt.TargetSmiPing(ip='192.0.1.230', timeout=3000)                                    # doctest: +SKIP 
+    Look for targets on the network and return their information.\n
+	\n
+    Usage:\n
+    \n
+    >>> mt = M1TargetFinder()                                                                   # doctest: +SKIP \n
+    >>> mt.TargetBroadcastSmiPing(timeout=3000)                                                 # doctest: +SKIP \n
+    >>> mt.TargetSmiPing(ip='192.0.1.230', timeout=3000)                                    # doctest: +SKIP \n
     """
 
     def __init__(self, pycom=PyCom(), maxdevices=50):
@@ -3080,19 +2832,19 @@ class M1TargetFinder:
 
 class _M1SwModule:
     """
-    The _M1SwModule class.
-    
-    Usage:
-    
-    >>> mh = M1Controller(ip='192.0.1.230')
-    >>> mh.connect(timeout=3000)
-    >>> swModule = _M1SwModule('RES', mh)
-    >>> swModule.getModHandle()                                                                 # doctest: +SKIP 
-    >>> swModule.getNumberofSviVariables()                                                      # doctest: +SKIP 
-    371
-    >>> swModule.getListofSviVariables()                                                        # doctest: +SKIP 
+    The _M1SwModule class.\n
+    \n
+    Usage:\n
+    \n
+    >>> mh = M1Controller(ip='192.0.1.230')\n
+    >>> mh.connect(timeout=3000)\n
+    >>> swModule = _M1SwModule('RES', mh)\n
+    >>> swModule.getModHandle()                                                                 # doctest: +SKIP \n
+    >>> swModule.getNumberofSviVariables()                                                      # doctest: +SKIP \n
+    371\n
+    >>> swModule.getListofSviVariables()                                                        # doctest: +SKIP \n
     >>> mh.disconnect()
-    0
+    0\n
     """
 
     def __init__(self, name, m1controller):
@@ -3159,35 +2911,35 @@ class _M1SwModule:
 
 class _SVIVariable:
     """
-    The _SVIVariable class.
-    
-    Usage:
-    
-    >>> mh = M1Controller(ip='192.0.1.230')
-    >>> mh.connect(timeout=3000)
-    >>> swModule = _M1SwModule('RES', mh)
-    >>> sviVariable = _SVIVariable('RES/CPU/TempCelsius', swModule)
-    >>> sviVariable.getVarHandle()                                                              # doctest: +SKIP 
-    >>> sviVariable.getVarInfo()                                                                # doctest: +SKIP 
-    >>> sviVariable.updateVarInfo()                                                             # doctest: +SKIP 
-    >>> sviVariable.read()                                                                      # doctest: +SKIP 
-    40
-    >>> sviVariable.write(22)                                                                   # doctest: +SKIP 
+    The _SVIVariable class.\n
+    \n
+    Usage:\n
+    \n
+    >>> mh = M1Controller(ip='192.0.1.230')\n
+    >>> mh.connect(timeout=3000)\n
+    >>> swModule = _M1SwModule('RES', mh)\n
+    >>> sviVariable = _SVIVariable('RES/CPU/TempCelsius', swModule)\n
+    >>> sviVariable.getVarHandle()                                                              # doctest: +SKIP \n
+    >>> sviVariable.getVarInfo()                                                                # doctest: +SKIP \n
+    >>> sviVariable.updateVarInfo()                                                             # doctest: +SKIP \n
+    >>> sviVariable.read()                                                                      # doctest: +SKIP \n
+    40\n
+    >>> sviVariable.write(22)                                                                   # doctest: +SKIP \n
     >>> sviVariable.getConnectionState()
-    'ONLINE'
+    'ONLINE'\n
     >>> sviVariable.getBaseDataType()
-    'SVI_F_SINT32'
+    'SVI_F_SINT32'\n
     >>> sviVariable.checkWritable()
-    False
+    False\n
     >>> sviVariable.checkReadable()
-    True
+    True\n
     >>> sviVariable.getArrayLen()
-    1
+    1\n
     >>> sviVariable.getFullName()
-    'RES/CPU/TempCelsius'
-    >>> sviVariable.detach()
+    'RES/CPU/TempCelsius'\n
+    >>> sviVariable.detach()\n
     >>> mh.disconnect()
-    0
+    0\n
     """
     def __init__(self, name, module):
         self.name = name
@@ -3758,4 +3510,3 @@ if __name__ == "__main__":
 
     import doctest
     doctest.testmod(verbose=False)
-    
